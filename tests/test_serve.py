@@ -1,15 +1,25 @@
-"""Serves the fixture on the test port and checks the page, its assets and the feed."""
+"""Serves the fixture feed next to web/ and checks the page, its assets, the
+feed, the vendored copies and the repo's hygiene. Stdlib only:
+    python3 -m unittest discover -s tests"""
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import time
 import unittest
+import urllib.error
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = int(os.environ.get("ORCHESTRA_TEST_PORT", "8949"))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PORT = int(os.environ.get("ORCHESTRA_TEST_PORT", "9129"))
 BASE = "http://127.0.0.1:%d" % PORT
+
+KIT_SCRIPTS = ("strata-loader.js", "strata-kit.js", "agentviz-feed.js", "agentviz-screen.js", "agentviz-hud.js",
+               "agentviz-wire.js")
+OWN_SCRIPTS = ("orchestra-audio.js", "orchestra-stage.js", "orchestra-frame.js", "page.js")
+PAGE_SCRIPTS = KIT_SCRIPTS + OWN_SCRIPTS
 
 
 def get(path):
@@ -17,19 +27,24 @@ def get(path):
         return r.status, r.headers.get("Content-Type", ""), r.read()
 
 
-class ServeFixture(unittest.TestCase):
+def read(*parts):
+    with open(os.path.join(REPO, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+class ServeFixtureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.proc = subprocess.Popen(
             [sys.executable, "-m", "vendor.agentfeed", "serve", "--web", "web", "--port", str(PORT), "--fixture"],
-            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
-                get("/api/agents")
+                socket.create_connection(("127.0.0.1", PORT), timeout=0.5).close()
                 return
             except OSError:
-                time.sleep(0.2)
+                time.sleep(0.1)
         cls.proc.kill()
         raise RuntimeError("server did not start")
 
@@ -37,47 +52,92 @@ class ServeFixture(unittest.TestCase):
     def tearDownClass(cls):
         cls.proc.terminate()
         cls.proc.wait(timeout=10)
-        cls.proc.stdout.close()
 
-    def test_page_and_assets(self):
-        for path, ctype in [("/", "text/html"), ("/orchestra.js", "javascript"), ("/orchestra-audio.js", "javascript"),
-                            ("/strata-kit.js", "javascript"), ("/strata-loader.js", "javascript"),
-                            ("/orchestra-engine.js", "javascript"), ("/orchestra-engine.wasm", "application/wasm")]:
-            status, got, body = get(path)
-            self.assertEqual(status, 200, path)
-            self.assertIn(ctype, got, path)
-            self.assertGreater(len(body), 100, path)
-
-    def test_page_references(self):
-        _, _, body = get("/")
+    def test_page_loads_the_kit_in_order(self):
+        status, ctype, body = get("/")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", ctype)
         html = body.decode()
-        for name in ["strata-loader.js", "strata-kit.js", "orchestra-audio.js", "orchestra.js", 'id="sound"',
-                     'aria-pressed="false"', 'id="panel"']:
-            self.assertIn(name, html)
+        positions = [html.index('src="%s"' % name) for name in PAGE_SCRIPTS]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("agentviz-hud.css", html)
 
-    def test_sound_never_autoplays(self):
-        _, _, body = get("/orchestra-audio.js")
-        src = body.decode()
-        # The only AudioContext is made inside enable(), which only the button calls.
-        self.assertEqual(src.count("new AC("), 1)
-        _, _, page_js = get("/orchestra.js")
-        self.assertEqual(page_js.decode().count("band.enable()"), 1)
+    def test_assets(self):
+        for asset in PAGE_SCRIPTS + ("agentviz-hud.css", "orchestra-engine.js"):
+            status, _, body = get("/" + asset)
+            self.assertEqual(status, 200, asset)
+            self.assertGreater(len(body), 500, asset)
+        status, ctype, body = get("/orchestra-engine.wasm")
+        self.assertEqual(status, 200)
+        self.assertEqual(ctype, "application/wasm")
+        self.assertEqual(body[:4], b"\0asm")
+
+    def test_engine_exports_only_the_wire_setter(self):
+        _, _, body = get("/page.js")
+        self.assertIn("createOrchestra", body.decode())
+        _, _, body = get("/orchestra-engine.js")
+        self.assertIn("_agentviz_frame", body.decode())
+        self.assertNotIn("_orc_set_", body.decode())
 
     def test_feed_parses(self):
-        status, ctype, body = get("/api/agents")
+        status, ctype, body = get("/api/agents?fixture=1")
         self.assertEqual(status, 200)
+        self.assertIn("json", ctype)
         doc = json.loads(body)
         self.assertEqual(doc["version"], 1)
         self.assertTrue(doc["fixture"])
         states = {s["state"] for s in doc["sessions"]}
         self.assertTrue({"busy", "idle", "waiting", "offline"} <= states)
-        actions = {s["action"] for s in doc["sessions"]} | {f["action"] for s in doc["sessions"] for f in s["followers"]}
-        self.assertTrue({"edit", "run", "read", "web", "delegate", "think"} <= actions)
-        self.assertEqual(sum(len(s["followers"]) for s in doc["sessions"]), 11)
+        for s in doc["sessions"]:
+            for key in ("id", "name", "state", "action", "place", "followers", "seed"):
+                self.assertIn(key, s)
+            for f in s["followers"]:
+                self.assertIn(f["state"], ("active", "resting"))
+        reasons = {s.get("waitingReason") for s in doc["sessions"] if s["state"] == "waiting"}
+        self.assertEqual(reasons, {"question", "permission"})
+        self.assertTrue(any(f.get("stalled") for s in doc["sessions"] for f in s["followers"]))
+        self.assertTrue(any(s.get("lastToolAt") for s in doc["sessions"]))
 
     def test_no_escape_from_web(self):
-        with self.assertRaises(urllib.error.HTTPError):
+        with self.assertRaises(urllib.error.HTTPError) as e:
             get("/../vendor/agentfeed/feed.py")
+        self.assertEqual(e.exception.code, 404)
+
+
+class PageScriptTest(unittest.TestCase):
+    def test_no_innerHTML_or_empty_catch(self):
+        for name in OWN_SCRIPTS:
+            source = read("web", name)
+            self.assertNotIn("innerHTML", source, name)
+            self.assertIsNone(re.search(r"catch\s*(\([^)]*\))?\s*\{\s*(/\*.*?\*/\s*)?\}", source, re.S), name)
+
+    def test_no_audio_context_before_sound_on(self):
+        # The only AudioContext is created in Band.enable(), which only the Sound on button calls.
+        audio, page = read("web", "orchestra-audio.js"), read("web", "page.js")
+        self.assertEqual(audio.count("new AC("), 1)
+        self.assertNotIn("AudioContext", page)
+        self.assertEqual(page.count("band.enable()"), 1)
+        self.assertIn('addEventListener("click"', page[page.index("function soundButton"):page.index("band.enable()")])
+
+
+class VendoredCopiesTest(unittest.TestCase):
+    def test_vendored_copies_match_their_pins(self):
+        result = subprocess.run([sys.executable, os.path.join(REPO, "vendor", "agentviz-kit", "check_vendor.py"), REPO],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class NoLocalPathsTest(unittest.TestCase):
+    MACHINE_ROOT = "/" + "root/"  # split so this file does not match itself
+
+    def test_no_machine_paths_in_tracked_text(self):
+        out = subprocess.run(["git", "ls-files"], cwd=REPO, stdout=subprocess.PIPE, universal_newlines=True).stdout
+        skip = (".wasm", ".png", ".gif", "package-lock.json")
+        for name in out.split():
+            if name.endswith(skip) or name.startswith("vendor/") or not os.path.exists(os.path.join(REPO, name)):
+                continue
+            with open(os.path.join(REPO, name), encoding="utf-8", errors="replace") as fh:
+                self.assertNotIn(self.MACHINE_ROOT, fh.read(), name)
 
 
 if __name__ == "__main__":

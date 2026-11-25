@@ -1,16 +1,25 @@
-# agentviz-orchestra
+# CLAUDE.md
 
-One visualization in the [agentviz](https://github.com/dmccoystephenson/agentviz) family:
-Claude Code sessions drawn as a concert stage with Strata's web kit.
+agentviz-orchestra: Claude Code sessions drawn as a concert stage (Strata web kit).
+Part of the agentviz family: https://github.com/dmccoystephenson/agentviz
 
-- Data comes ONLY from `/api/agents` (vendor/agentfeed, schema in agentviz docs/FEED.md).
-  Never edit `vendor/agentfeed/`; re-vendor with `agentviz/tools/vendor-feed.sh`.
-- Scene: `scene/main.cpp` (draws rows the page writes), page: `web/index.html` +
-  `web/orchestra.js` (layout, easing, picking, panel, audio). Build with `scene/build.sh`;
-  the built `web/orchestra-engine.{js,wasm}` and kit scripts are committed.
-- Run: `python3 -m vendor.agentfeed serve --web web --port 8849 [--fixture]`. Port 8849 only
-  (8949 for tests).
-- Test: `python3 -m unittest discover -s tests` and
-  `NODE_PATH=/root/arcade-watch/node_modules node tests/smoke.cjs`.
-- Audio is OFF by default and only starts from the "Sound on" button. Never autoplay.
-- Screenshots come from the fixture feed only, never live sessions.
+- Data comes only from `/api/agents` (vendor/agentfeed; schema in the agentviz repo's docs/FEED.md).
+- Shared pieces come from the agentviz kit (docs/KIT.md there): `vendor/agentviz-kit/` and the
+  `web/agentviz-*` copies. Never edit `vendor/` or `web/agentviz-*`; re-vendor from an agentviz
+  checkout with `tools/vendor-kit.sh <this repo>`. `tests/test_serve.py` checks the PINs.
+- Page: `web/orchestra-stage.js` lays out ensembles, conductors and musicians and eases them;
+  `web/orchestra-frame.js` packs each frame in the agentviz wire format; `web/orchestra-audio.js`
+  is the opt-in sound; `web/page.js` boots the feed client, HUD, labels, camera and per-call notes;
+  `web/index.html` holds the theme and the legend.
+- Scene: `scene/main.cpp` decodes the wire (`agentviz.h`) and calls `hall.h`, `conductor.h`,
+  `musician.h` (with `instruments.h`, `draw_util.h`). Build:
+  `EMSDK=/path/to/emsdk vendor/agentviz-kit/scene/build-scene.sh scene/kit.conf`
+  (emsdk 6.0.11, Strata 0.10.0). The built `web/orchestra-engine.*` are committed.
+- Run: `python3 -m vendor.agentfeed serve --web web --port 8849 [--fixture]`.
+- Tests: `python3 -m unittest discover -s tests`; browser tests after `npm ci` and
+  `npx playwright install chromium`: `npm run smoke`, `npm run screenshots` (Pillow from
+  requirements-dev.txt for the GIF). Tests use port 9129 (`ORCHESTRA_TEST_PORT` overrides).
+- Audio is OFF by default: no AudioContext exists until the "Sound on" button. Never autoplay.
+- Screenshots come from the FIXTURE feed only, never live sessions.
+- While the repo is private, hosted Actions are billing-blocked: run localci on PRs
+  (drop this line once it is public).

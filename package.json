@@ -1,0 +1,13 @@
+{
+  "name": "agentviz-orchestra",
+  "private": true,
+  "description": "Browser tests for agentviz-orchestra (the page itself needs no build).",
+  "license": "MIT",
+  "scripts": {
+    "smoke": "node tests/smoke.cjs",
+    "screenshots": "node tests/screenshots.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.61.1"
+  }
+}
