@@ -4,7 +4,9 @@
    AudioContext, until the page calls Band.enable() from the "Sound on"
    button (a user gesture). Each new tool call plays one short, soft note in
    its family's timbre; while anyone waits on the owner a gentle chime
-   repeats. Notes are rate-limited and the master volume is low. */
+   repeats. Notes are rate-limited and the master volume is low.
+
+   Classic script: window.OrchestraBand. */
 (function () {
   "use strict";
   // C major pentatonic, two and a half octaves from C3 (MIDI 48).
@@ -16,6 +18,68 @@
   const BURST_WINDOW = 3.0;  // ... in this many seconds
   const CHIME_EVERY = 6.0;   // seconds between waiting chimes
 
+  /* Each family's timbre: (band, hz, t0, gain) wires oscillators into gain
+     and shapes its envelope. */
+  const TIMBRE = {
+    edit(b, hz, t0, g) {  // strings: a bowed sawtooth, softened, with vibrato
+      const o = b._osc("sawtooth", hz, t0, 0.8, b._lowpass(1400, g));
+      const lfo = b.ctx.createOscillator(), depth = b.ctx.createGain();
+      lfo.frequency.value = 5.5;
+      depth.gain.value = hz * 0.006;
+      lfo.connect(depth);
+      depth.connect(o.frequency);
+      lfo.start(t0);
+      lfo.stop(t0 + 0.85);
+      b._env(g, t0, 0.09, 0.22, 0.7);
+    },
+    run(b, hz, t0, g) {  // percussion: a soft drum, pitch falling, a breath of noise
+      const o = b._osc("sine", hz * 1.5, t0, 0.35, g);
+      o.frequency.exponentialRampToValueAtTime(hz * 0.5, t0 + 0.18);
+      const n = b.ctx.createBufferSource(), band = b.ctx.createBiquadFilter(), ng = b.ctx.createGain();
+      n.buffer = b.noise;
+      band.type = "bandpass";
+      band.frequency.value = 900;
+      ng.gain.value = 0.08;
+      n.connect(band);
+      band.connect(ng);
+      ng.connect(g);
+      n.start(t0);
+      n.stop(t0 + 0.2);
+      b._env(g, t0, 0.005, 0.5, 0.3);
+    },
+    read(b, hz, t0, g) {  // woodwinds: a breathy triangle
+      const f = b._lowpass(2400, g);
+      b._osc("triangle", hz, t0, 0.6, f);
+      b._osc("sine", hz * 2, t0, 0.6, f);
+      b._env(g, t0, 0.06, 0.25, 0.5);
+    },
+    web(b, hz, t0, g) {  // brass: a square with an opening filter
+      const f = b._lowpass(500, g);
+      f.Q.value = 2;
+      f.frequency.setValueAtTime(500, t0);
+      f.frequency.exponentialRampToValueAtTime(2600, t0 + 0.08);
+      f.frequency.exponentialRampToValueAtTime(900, t0 + 0.5);
+      b._osc("square", hz, t0, 0.6, f);
+      b._env(g, t0, 0.04, 0.14, 0.5);
+    },
+    delegate(b, hz, t0, g) {  // the baton: a small bell
+      b._osc("sine", hz, t0, 1.1, g);
+      const overtone = b.ctx.createGain();
+      overtone.gain.value = 0.3;
+      overtone.connect(g);
+      b._osc("sine", hz * 2.76, t0, 0.6, overtone);
+      b._env(g, t0, 0.005, 0.25, 1.0);
+    },
+    think(b, hz, t0, g) {  // the pause: barely there
+      b._osc("sine", hz, t0, 0.9, g);
+      b._env(g, t0, 0.2, 0.1, 0.7);
+    },
+    other(b, hz, t0, g) {  // a plucked triangle
+      b._osc("triangle", hz, t0, 0.4, g);
+      b._env(g, t0, 0.005, 0.28, 0.35);
+    },
+  };
+
   const Band = {
     ctx: null, master: null, on: false, lastNote: -1e9, recent: [], lastChime: -1e9, step: 0, noise: null,
 
@@ -24,15 +88,7 @@
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return false;
         this.ctx = new AC();
-        const comp = this.ctx.createDynamicsCompressor();
-        this.master = this.ctx.createGain();
-        this.master.gain.value = 0.18;
-        this.master.connect(comp);
-        comp.connect(this.ctx.destination);
-        const len = Math.floor(this.ctx.sampleRate * 0.3);
-        this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-        const d = this.noise.getChannelData(0);
-        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+        this._buildMaster();
       }
       this.ctx.resume();
       this.on = true;
@@ -42,6 +98,19 @@
     disable() {
       this.on = false;
       if (this.ctx) this.ctx.suspend();
+    },
+
+    // A quiet master through a compressor, and a short noise burst for the drum.
+    _buildMaster() {
+      const comp = this.ctx.createDynamicsCompressor();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.18;
+      this.master.connect(comp);
+      comp.connect(this.ctx.destination);
+      const len = Math.floor(this.ctx.sampleRate * 0.3);
+      this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = this.noise.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
     },
 
     _allowed(now) {
@@ -70,6 +139,14 @@
       return o;
     },
 
+    _lowpass(hz, dest) {
+      const f = this.ctx.createBiquadFilter();
+      f.type = "lowpass";
+      f.frequency.value = hz;
+      f.connect(dest);
+      return f;
+    },
+
     /* One note for a tool call of `action` by an agent with `seed` (0..1). */
     note(action, seed) {
       if (!this.on || !this.ctx || this.ctx.state !== "running") return false;
@@ -77,52 +154,9 @@
       if (!this._allowed(now)) return false;
       const fam = OCTAVE[action] != null ? action : "other";
       const deg = Math.floor(((seed || 0) * 10 + this.step++) % SCALE.length);
-      const hz = midiHz(48 + 12 * OCTAVE[fam] + SCALE[deg]);
-      const ctx = this.ctx, t0 = now + 0.01;
-      const g = ctx.createGain();
+      const g = this.ctx.createGain();
       g.connect(this.master);
-      if (fam === "edit") {  // strings: a bowed sawtooth, softened
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass"; f.frequency.value = 1400; f.connect(g);
-        const o = this._osc("sawtooth", hz, t0, 0.8, f);
-        const lfo = ctx.createOscillator(), lg = ctx.createGain();
-        lfo.frequency.value = 5.5; lg.gain.value = hz * 0.006;
-        lfo.connect(lg); lg.connect(o.frequency); lfo.start(t0); lfo.stop(t0 + 0.85);
-        this._env(g, t0, 0.09, 0.22, 0.7);
-      } else if (fam === "run") {  // percussion: a soft drum, pitch falling, a breath of noise
-        const o = this._osc("sine", hz * 1.5, t0, 0.35, g);
-        o.frequency.exponentialRampToValueAtTime(hz * 0.5, t0 + 0.18);
-        const n = ctx.createBufferSource(), nf = ctx.createBiquadFilter(), ng = ctx.createGain();
-        n.buffer = this.noise; nf.type = "bandpass"; nf.frequency.value = 900; ng.gain.value = 0.08;
-        n.connect(nf); nf.connect(ng); ng.connect(g); n.start(t0); n.stop(t0 + 0.2);
-        this._env(g, t0, 0.005, 0.5, 0.3);
-      } else if (fam === "read") {  // woodwinds: a breathy triangle
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass"; f.frequency.value = 2400; f.connect(g);
-        this._osc("triangle", hz, t0, 0.6, f);
-        this._osc("sine", hz * 2, t0, 0.6, f);
-        this._env(g, t0, 0.06, 0.25, 0.5);
-      } else if (fam === "web") {  // brass: a square with an opening filter
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass"; f.Q.value = 2;
-        f.frequency.setValueAtTime(500, t0);
-        f.frequency.exponentialRampToValueAtTime(2600, t0 + 0.08);
-        f.frequency.exponentialRampToValueAtTime(900, t0 + 0.5);
-        f.connect(g);
-        this._osc("square", hz, t0, 0.6, f);
-        this._env(g, t0, 0.04, 0.14, 0.5);
-      } else if (fam === "delegate") {  // the baton: a small bell
-        this._osc("sine", hz, t0, 1.1, g);
-        const g2 = ctx.createGain(); g2.gain.value = 0.3; g2.connect(g);
-        this._osc("sine", hz * 2.76, t0, 0.6, g2);
-        this._env(g, t0, 0.005, 0.25, 1.0);
-      } else if (fam === "think") {  // the pause: barely there
-        this._osc("sine", hz, t0, 0.9, g);
-        this._env(g, t0, 0.2, 0.1, 0.7);
-      } else {  // other: a plucked triangle
-        this._osc("triangle", hz, t0, 0.4, g);
-        this._env(g, t0, 0.005, 0.28, 0.35);
-      }
+      TIMBRE[fam](this, midiHz(48 + 12 * OCTAVE[fam] + SCALE[deg]), now + 0.01, g);
       return true;
     },
 
