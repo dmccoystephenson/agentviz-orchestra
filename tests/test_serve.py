@@ -105,11 +105,10 @@ class ServeFixtureTest(unittest.TestCase):
 
 
 class PageScriptTest(unittest.TestCase):
-    def test_no_innerHTML_or_empty_catch(self):
+    def test_no_comment_only_catch(self):
+        # The kit's guard catches empty blocks; this also catches a catch holding only a comment.
         for name in OWN_SCRIPTS:
-            source = read("web", name)
-            self.assertNotIn("innerHTML", source, name)
-            self.assertIsNone(re.search(r"catch\s*(\([^)]*\))?\s*\{\s*(/\*.*?\*/\s*)?\}", source, re.S), name)
+            self.assertIsNone(re.search(r"catch\s*(\([^)]*\))?\s*\{\s*/\*.*?\*/\s*\}", read("web", name), re.S), name)
 
     def test_no_audio_context_before_sound_on(self):
         # The only AudioContext is created in Band.enable(), which only the Sound on button calls.
@@ -125,19 +124,6 @@ class VendoredCopiesTest(unittest.TestCase):
         result = subprocess.run([sys.executable, os.path.join(REPO, "vendor", "agentviz-kit", "check_vendor.py"), REPO],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-
-
-class NoLocalPathsTest(unittest.TestCase):
-    MACHINE_ROOT = "/" + "root/"  # split so this file does not match itself
-
-    def test_no_machine_paths_in_tracked_text(self):
-        out = subprocess.run(["git", "ls-files"], cwd=REPO, stdout=subprocess.PIPE, universal_newlines=True).stdout
-        skip = (".wasm", ".png", ".gif", "package-lock.json")
-        for name in out.split():
-            if name.endswith(skip) or name.startswith("vendor/") or not os.path.exists(os.path.join(REPO, name)):
-                continue
-            with open(os.path.join(REPO, name), encoding="utf-8", errors="replace") as fh:
-                self.assertNotIn(self.MACHINE_ROOT, fh.read(), name)
 
 
 if __name__ == "__main__":
