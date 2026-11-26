@@ -83,7 +83,7 @@ async function desktopStills(browser, server) {
 async function phoneStills(browser, server) {
   if (!want("phone") && !want("phone-sheet")) return;
   const {ctx, page, errors} = await openPage(browser, server, PHONE);
-  await shoot(page, "phone-sheet", "window.__shots.fit(); window.__page.select('demo-waiting')");
+  await shoot(page, "phone-sheet", "window.__shots.fit(); window.__page.tap('demo-waiting')");
   await shoot(page, "phone", "window.__page.select(null); window.__shots.fit()");
   h.assertNoErrors(errors);
   await ctx.close();

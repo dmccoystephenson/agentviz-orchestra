@@ -41,7 +41,10 @@ Query options: `?fixture=1` (demo feed), `?fps=1` (frame stats).
 
 Drag to orbit, right-drag or two fingers to pan, wheel or pinch to zoom. Tap a
 conductor, musician or empty chair for its card (a bottom sheet on a phone;
-swipe it down or tap the cross to close). The gold **need you** chip names
+swipe it down or tap the cross to close); if the card would cover what you
+tapped, the view slides it into the clear part of the screen. A busy
+conductor's label leads with its instrument, and a stalled agent's label says
+"stalled" in red. The gold **need you** chip names
 who is waiting and why, flies the camera there and cycles through them; the
 house button recentres; **?** opens the legend. If the feed stops answering,
 a banner says so and the last snapshot stays; with no sessions at all, a hint
@@ -118,11 +121,12 @@ as a chip you can tap to jump to it.*
 
 <p>
 <img src="docs/media/phone-sheet.png" width="260" alt="Phone: bottom sheet open on Thistle, which needs permission">
-<img src="docs/media/phone.png" width="260" alt="Phone: the whole stage in portrait">
+<img src="docs/media/phone.png" width="260" alt="Phone: the whole stage in portrait, seen from the wings">
 </p>
 
-*On a phone (390 x 844): the card is a bottom sheet (left, open on Thistle); drag to orbit, pinch to zoom,
-two fingers to pan.*
+*On a phone (390 x 844): the top bar keeps to one line (need you, busy, subagents and the buttons); the card is
+a bottom sheet (left, open on Thistle, slid clear above it); in portrait the stage is seen from the wings so its
+long side runs up the screen (right); drag to orbit, pinch to zoom, two fingers to pan.*
 
 ![The stage from the wings](docs/media/angle-side.png)
 *From the wings, low: the risers step up for the back rows.*
@@ -141,7 +145,8 @@ its note pops on stage; a snapshot's calls are spread over a second and a half
 rather than struck as one chord. While anyone needs you, a gentle two-note
 chime repeats every six seconds. Notes are rate-limited (at most six in three
 seconds) and quiet. On the demo feed the busy agents make a new call every few
-polls so there is something to hear.
+polls so there is something to hear. **Sound on** is a toggle: it lights gold
+while pressed (and says so to a screen reader); press it again to stop.
 
 ## Build and test
 
