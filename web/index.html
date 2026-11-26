@@ -22,15 +22,10 @@
   .av-sound[aria-pressed="true"] { background: #3a2a10; border-color: var(--av-wait); color: var(--av-note);
     box-shadow: inset 0 0 0 1px var(--av-wait); }
   .av-sound[aria-pressed="false"] .av-sound-glyph { opacity: 0.6; }
-  /* Phones: the top bar stays one line. The title is in the tab already; the
-     idle and away counts give way to "need you", busy and subagents. */
+  /* Phones: the idle and away counts give way to "need you", busy and
+     subagents; the sound button keeps only its word. */
   @media (max-width: 640px) {
-    .av-bar { flex-wrap: nowrap; gap: 4px; }
-    .av-bar .av-chip { padding: 4px 7px; gap: 4px; white-space: nowrap; flex: none; }
-    .av-bar .av-title, .av-bar > span.av-chip:has(.av-s-idle), .av-bar > span.av-chip:has(.av-s-offline) { display: none; }
-    .av-bar .av-badge { font-size: 0; gap: 0; }
-    .av-bar .av-badge::after { content: "demo"; font-size: 11px; }
-    .av-bar button.av-chip { min-width: 40px; justify-content: center; }
+    .av-one-row .av-count-idle, .av-one-row .av-count-offline { display: none; }
     .av-bar .av-sound .av-sound-glyph { display: none; }
   }
   @media (max-width: 400px) { .av-bar .av-badge { display: none; } }

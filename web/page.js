@@ -61,24 +61,10 @@
   }
 
   /* ------------------------------------------------------------ camera */
-  // The camera the engine builds (Strata's kit: an orbit about the target,
-  // 50 degree vertical field of view), here so a view can be fitted before it
-  // is drawn. Keep in step with strata_kit.h if the kit changes;
-  // window.__page.projectWith lets a test compare it with kit.project.
-  const FOV_TAN = Math.tan(25 * Math.PI / 180);
-  function projectWith(c, x, y, z, W, H) {
-    const cp = Math.cos(c.pitch);
-    const ex = c.tx + c.dist * cp * Math.cos(c.yaw), ey = c.ty + c.dist * Math.sin(c.pitch), ez = c.tz + c.dist * cp * Math.sin(c.yaw);
-    let fx = c.tx - ex, fy = c.ty - ey, fz = c.tz - ez;
-    const fl = Math.hypot(fx, fy, fz); fx /= fl; fy /= fl; fz /= fl;
-    const rl = Math.hypot(fz, fx), rx = -fz / rl, rz = fx / rl;            // forward x up
-    const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;             // right x forward
-    const px = x - ex, py = y - ey, pz = z - ez;
-    const depth = px * fx + py * fy + pz * fz;
-    if (depth <= 0.01) return null;
-    const sx = (px * rx + pz * rz) / (depth * FOV_TAN * (W / H)), sy = (px * ux + py * uy + pz * uz) / (depth * FOV_TAN);
-    return {x: (sx * 0.5 + 0.5) * W, y: (0.5 - sy * 0.5) * H};
-  }
+  // The engine's camera maths (Strata kit sk_frame) comes from the agentviz
+  // kit, so a view can be fitted before it is drawn; window.__page.projectWith
+  // lets a test compare it with kit.project.
+  const {projectWith, fitPoints} = AgentvizScreen;
 
   // The part of the canvas nothing covers: below the top bar and, with
   // `panel`, above the bottom sheet (phone) or right of the card (desktop).
@@ -94,23 +80,6 @@
     return r;
   }
 
-  // Moves the camera target so world point (x, y, z) lands on screen (sx, sy):
-  // a few Newton steps on the ground-plane Jacobian.
-  function aim(c, x, y, z, sx, sy, W, H) {
-    for (let i = 0; i < 6; i++) {
-      const q = projectWith(c, x, y, z, W, H);
-      const qx = projectWith(Object.assign({}, c, {tx: c.tx + 1}), x, y, z, W, H);
-      const qz = projectWith(Object.assign({}, c, {tz: c.tz + 1}), x, y, z, W, H);
-      if (!q || !qx || !qz) return c;
-      const a = qx.x - q.x, b = qz.x - q.x, d = qx.y - q.y, e = qz.y - q.y, det = a * e - b * d;
-      if (Math.abs(det) < 1e-6) return c;
-      const dx = sx - q.x, dy = sy - q.y;
-      c.tx += (e * dx - b * dy) / det;
-      c.tz += (a * dy - d * dx) / det;
-    }
-    return c;
-  }
-
   // The whole stage (every rug, its risers and the figures on the back row)
   // as large as it fits below the top bar, on phones and desktops alike. A
   // portrait screen looks down steeply and, when the stage is wider than it
@@ -123,23 +92,13 @@
     return wings.dist < front.dist * 0.85 ? wings : front;
   }
   function fitFrom(yaw, pitch, fr) {
-    const b = stage.bounds, W = fr.W, H = fr.H;
+    const b = stage.bounds;
     const top = stage.rugs.reduce((m, r) => Math.max(m, r.y), 0);
     const pts = [[b.x0, 0, b.z1 + 0.6], [b.x1, 0, b.z1 + 0.6], [b.x0, top, b.z0], [b.x1, top, b.z0],
       [b.x0, top + 2.6, b.z0 + 1.5], [b.x1, top + 2.6, b.z0 + 1.5]];
     const mid = [(b.x0 + b.x1) / 2, top / 2, (b.z0 + b.z1) / 2];
     const c = {yaw, pitch, dist: 40, tx: mid[0], ty: 0.5, tz: mid[2]};
-    for (let i = 0; i < 30; i++) {
-      const qs = pts.map((p) => projectWith(c, p[0], p[1], p[2], W, H));
-      if (qs.some((q) => !q)) { c.dist *= 1.3; continue; }
-      const bx0 = Math.min(...qs.map((q) => q.x)), bx1 = Math.max(...qs.map((q) => q.x));
-      const by0 = Math.min(...qs.map((q) => q.y)), by1 = Math.max(...qs.map((q) => q.y));
-      const k = Math.max((bx1 - bx0) / (fr.x1 - fr.x0 - 16), (by1 - by0) / (fr.y1 - fr.y0 - 16));
-      c.dist = Math.min(110, Math.max(10, c.dist * Math.pow(k, 0.7)));
-      const m = projectWith(c, mid[0], mid[1], mid[2], W, H);
-      if (m) aim(c, mid[0], mid[1], mid[2], m.x + (fr.x0 + fr.x1) / 2 - (bx0 + bx1) / 2, m.y + (fr.y0 + fr.y1) / 2 - (by0 + by1) / 2, W, H);
-    }
-    return c;
+    return fitPoints(c, pts, fr, {mid, minDist: 10, maxDist: 110, inset: 16, iterations: 30});
   }
   let lastFit = null;
   function fit(instant) { userMoved = false; lastFit = fitView(); flyTo(lastFit, instant); }
@@ -168,10 +127,10 @@
     if (!f || !kit) return;
     userMoved = true;
     const fr = freeRect(true), base = camAnim ? camAnim.to : kit.cam;
-    const c = Object.assign({}, base, zoom ? {dist: Math.min(base.dist, 16)} : {});
-    const p = f.target, y = p.y + 1.0, q = projectWith(c, p.x, y, p.z, fr.W, fr.H), pad = 36;
-    if (!zoom && q && q.x > fr.x0 + pad && q.x < fr.x1 - pad && q.y > fr.y0 + pad + 30 && q.y < fr.y1 - pad) return;
-    flyTo(aim(c, p.x, y, p.z, (fr.x0 + fr.x1) / 2, (fr.y0 + fr.y1) / 2 + 16, fr.W, fr.H));
+    const p = f.target, pad = {top: 66, right: 36, bottom: 36, left: 36};
+    const to = AgentvizScreen.reveal(base, [p.x, p.y + 1.0, p.z], fr,
+      zoom ? {set: {dist: Math.min(base.dist, 16)}, force: true, pad, dy: 16} : {pad, dy: 16});
+    if (to) flyTo(to);
   }
   const focusOn = (id) => reveal(id, true);
 
@@ -200,21 +159,6 @@
     const sx = c.x + (f.leadX - c.x) * 0.45, sz = c.z + (f.leadZ - c.z) * 0.45;
     return {el, q: kit.project(sx, c.y + 1.35, sz), rank: sel ? 0 : (stalled ? 1 : 4)};
   }
-  // Labels stay on screen and out from under the top bar: one that would sit
-  // under it hides, unless it must show (waiting, selected), then it drops below.
-  function keepClear(items) {
-    const fr = freeRect(false), top = fr.y0 - 4;
-    for (const it of items) {
-      if (!it.q || it.el._skW == null) continue;
-      const half = it.el._skW / 2 + 4, h = it.el._skH || 18;
-      const x = Math.min(Math.max(it.q.x, half), Math.max(half, fr.W - half));
-      it.q = {x, y: it.q.y, w: it.q.w};
-      if (it.q.y - h < top) {
-        if (it.rank <= 0) { it.q = {x, y: top + h, w: it.q.w}; it.tries = 1; } else it.q = null;
-      } else if (it.q.y - 3 * h < top) it.tries = 1;  // no stepping up into the bar to dodge a neighbour
-    }
-    return items;
-  }
   function placeLabels() {
     const items = [];
     labels.begin();
@@ -224,7 +168,9 @@
     }
     for (const f of stage.figs.values()) items.push(f.kind === KIND.musician ? laneLabel(f) : conductorLabel(f));
     labels.end();
-    StrataKit.placeLabels(keepClear(items));
+    // On screen and clear of the bar, panel and legend; a label that must
+    // show (waiting, selected) drops below the bar instead of hiding.
+    hud.placeLabels(items, {canvas});
   }
   function accentOf(s) { return `hsl(${Math.round((s.seed != null ? s.seed : seedOf(s.id)) % 1 * 360)} 70% 62%)`; }
 
@@ -326,7 +272,7 @@
   }
 
   async function boot() {
-    hud = AgentvizHud.create({title: "𝄞 Orchestra", legend: document.getElementById("legend"),
+    hud = AgentvizHud.create({title: "𝄞 Orchestra", oneRow: true, legend: document.getElementById("legend"),
       buttons: [{icon: "home", label: "Recentre the view", onClick: () => fit(false)}], onSelect, rows: panelRows});
     soundButton();
     stage.onCall = (fig) => { if (band.on) playCall(fig); };
