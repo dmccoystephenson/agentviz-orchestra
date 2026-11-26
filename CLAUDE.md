@@ -21,5 +21,3 @@ Part of the agentviz family: https://github.com/dmccoystephenson/agentviz
   requirements-dev.txt for the GIF). Tests use port 9129 (`ORCHESTRA_TEST_PORT` overrides).
 - Audio is OFF by default: no AudioContext exists until the "Sound on" button. Never autoplay.
 - Screenshots come from the FIXTURE feed only, never live sessions.
-- While the repo is private, hosted Actions are billing-blocked: run localci on PRs
-  (drop this line once it is public).
