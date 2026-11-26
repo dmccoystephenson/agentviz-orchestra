@@ -61,15 +61,94 @@
   }
 
   /* ------------------------------------------------------------ camera */
-  function fitView() {
-    const b = stage.bounds, w = b.x1 - b.x0 + 6, d = b.z1 - b.z0 + 6;
-    const aspect = canvas.clientWidth / Math.max(canvas.clientHeight, 1), portrait = aspect < 0.8;
-    // Portrait (a phone): look down more steeply so the stage's depth fills the height.
-    const k = portrait ? 0.95 : 0.7;
-    return {yaw: Math.PI / 2, pitch: portrait ? 1.25 : 0.8, tx: (b.x0 + b.x1) / 2, ty: 0.5, tz: (b.z0 + b.z1) / 2 + 1.2,
-      dist: Math.min(Math.max(w * k / Math.min(aspect, 1.6) + 2, d * 1.15, 12), 110)};
+  // The camera the engine builds (Strata's kit: an orbit about the target,
+  // 50 degree vertical field of view), here so a view can be fitted before it
+  // is drawn. Keep in step with strata_kit.h if the kit changes;
+  // window.__page.projectWith lets a test compare it with kit.project.
+  const FOV_TAN = Math.tan(25 * Math.PI / 180);
+  function projectWith(c, x, y, z, W, H) {
+    const cp = Math.cos(c.pitch);
+    const ex = c.tx + c.dist * cp * Math.cos(c.yaw), ey = c.ty + c.dist * Math.sin(c.pitch), ez = c.tz + c.dist * cp * Math.sin(c.yaw);
+    let fx = c.tx - ex, fy = c.ty - ey, fz = c.tz - ez;
+    const fl = Math.hypot(fx, fy, fz); fx /= fl; fy /= fl; fz /= fl;
+    const rl = Math.hypot(fz, fx), rx = -fz / rl, rz = fx / rl;            // forward x up
+    const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;             // right x forward
+    const px = x - ex, py = y - ey, pz = z - ez;
+    const depth = px * fx + py * fy + pz * fz;
+    if (depth <= 0.01) return null;
+    const sx = (px * rx + pz * rz) / (depth * FOV_TAN * (W / H)), sy = (px * ux + py * uy + pz * uz) / (depth * FOV_TAN);
+    return {x: (sx * 0.5 + 0.5) * W, y: (0.5 - sy * 0.5) * H};
   }
-  function fit(instant) { userMoved = false; flyTo(fitView(), instant); }
+
+  // The part of the canvas nothing covers: below the top bar and, with
+  // `panel`, above the bottom sheet (phone) or right of the card (desktop).
+  function freeRect(panel) {
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    const bar = document.querySelector(".av-bar");
+    const r = {x0: 8, y0: (bar ? bar.getBoundingClientRect().bottom : 0) + 8, x1: W - 8, y1: H - 8, W, H};
+    const p = panel && hud && hud.panel;
+    if (p && !p.hidden) {
+      if (p.offsetWidth >= W - 40) r.y1 = Math.min(r.y1, H - p.offsetHeight - 8);
+      else r.x0 = Math.max(r.x0, p.offsetLeft + p.offsetWidth + 8);
+    }
+    return r;
+  }
+
+  // Moves the camera target so world point (x, y, z) lands on screen (sx, sy):
+  // a few Newton steps on the ground-plane Jacobian.
+  function aim(c, x, y, z, sx, sy, W, H) {
+    for (let i = 0; i < 6; i++) {
+      const q = projectWith(c, x, y, z, W, H);
+      const qx = projectWith(Object.assign({}, c, {tx: c.tx + 1}), x, y, z, W, H);
+      const qz = projectWith(Object.assign({}, c, {tz: c.tz + 1}), x, y, z, W, H);
+      if (!q || !qx || !qz) return c;
+      const a = qx.x - q.x, b = qz.x - q.x, d = qx.y - q.y, e = qz.y - q.y, det = a * e - b * d;
+      if (Math.abs(det) < 1e-6) return c;
+      const dx = sx - q.x, dy = sy - q.y;
+      c.tx += (e * dx - b * dy) / det;
+      c.tz += (a * dy - d * dx) / det;
+    }
+    return c;
+  }
+
+  // The whole stage (every rug, its risers and the figures on the back row)
+  // as large as it fits below the top bar, on phones and desktops alike. A
+  // portrait screen looks down steeply and, when the stage is wider than it
+  // is deep, from the wings, so the stage's long side runs up the screen.
+  function fitView() {
+    const fr = freeRect(false), portrait = fr.W / Math.max(fr.H, 1) < 0.8;
+    const front = fitFrom(Math.PI / 2, portrait ? 1.2 : 0.8, fr);
+    if (!portrait) return front;
+    const wings = fitFrom(0, 1.2, fr);
+    return wings.dist < front.dist * 0.85 ? wings : front;
+  }
+  function fitFrom(yaw, pitch, fr) {
+    const b = stage.bounds, W = fr.W, H = fr.H;
+    const top = stage.rugs.reduce((m, r) => Math.max(m, r.y), 0);
+    const pts = [[b.x0, 0, b.z1 + 0.6], [b.x1, 0, b.z1 + 0.6], [b.x0, top, b.z0], [b.x1, top, b.z0],
+      [b.x0, top + 2.6, b.z0 + 1.5], [b.x1, top + 2.6, b.z0 + 1.5]];
+    const mid = [(b.x0 + b.x1) / 2, top / 2, (b.z0 + b.z1) / 2];
+    const c = {yaw, pitch, dist: 40, tx: mid[0], ty: 0.5, tz: mid[2]};
+    for (let i = 0; i < 30; i++) {
+      const qs = pts.map((p) => projectWith(c, p[0], p[1], p[2], W, H));
+      if (qs.some((q) => !q)) { c.dist *= 1.3; continue; }
+      const bx0 = Math.min(...qs.map((q) => q.x)), bx1 = Math.max(...qs.map((q) => q.x));
+      const by0 = Math.min(...qs.map((q) => q.y)), by1 = Math.max(...qs.map((q) => q.y));
+      const k = Math.max((bx1 - bx0) / (fr.x1 - fr.x0 - 16), (by1 - by0) / (fr.y1 - fr.y0 - 16));
+      c.dist = Math.min(110, Math.max(10, c.dist * Math.pow(k, 0.7)));
+      const m = projectWith(c, mid[0], mid[1], mid[2], W, H);
+      if (m) aim(c, mid[0], mid[1], mid[2], m.x + (fr.x0 + fr.x1) / 2 - (bx0 + bx1) / 2, m.y + (fr.y0 + fr.y1) / 2 - (by0 + by1) / 2, W, H);
+    }
+    return c;
+  }
+  let lastFit = null;
+  function fit(instant) { userMoved = false; lastFit = fitView(); flyTo(lastFit, instant); }
+  // A turned phone or a resized window refits, unless the view was moved since.
+  function refitOnResize() {
+    const c = kit && kit.cam;
+    if (!c || !lastFit || camAnim || userMoved) return;
+    fit(true);
+  }
   function flyTo(to, instant) {
     if (!kit) return;
     if (instant || kit.driven) { Object.assign(kit.cam, to); camAnim = null; return; }
@@ -81,31 +160,60 @@
     for (const key of Object.keys(camAnim.to)) kit.cam[key] = lerp(camAnim.from[key], camAnim.to[key], e);
     if (k >= 1) camAnim = null;
   }
-  function focusOn(id) {
+  // Brings a figure into the clear part of the screen, above the bottom sheet
+  // or beside the card. With `zoom` it also moves in close; otherwise the
+  // camera only slides, and only when the figure is covered or off screen.
+  function reveal(id, zoom) {
     const f = stage.figs.get(id);
-    if (!f) return;
+    if (!f || !kit) return;
     userMoved = true;
-    flyTo({tx: f.target.x, ty: f.target.y + 0.8, tz: f.target.z + 1, dist: Math.min(kit.cam.dist, 16)});
+    const fr = freeRect(true), base = camAnim ? camAnim.to : kit.cam;
+    const c = Object.assign({}, base, zoom ? {dist: Math.min(base.dist, 16)} : {});
+    const p = f.target, y = p.y + 1.0, q = projectWith(c, p.x, y, p.z, fr.W, fr.H), pad = 36;
+    if (!zoom && q && q.x > fr.x0 + pad && q.x < fr.x1 - pad && q.y > fr.y0 + pad + 30 && q.y < fr.y1 - pad) return;
+    flyTo(aim(c, p.x, y, p.z, (fr.x0 + fr.x1) / 2, (fr.y0 + fr.y1) / 2 + 16, fr.W, fr.H));
   }
+  const focusOn = (id) => reveal(id, true);
 
   /* ------------------------------------------------------------ labels */
+  // A busy conductor's label leads with its instrument, so "who is doing
+  // what" reads from the labels alone; a stalled one says so in red.
   function conductorLabel(f) {
     const s = f.session, waiting = s.state === "waiting", sel = f.id === selectedId;
-    const text = waiting ? (s.name || s.id) + " " + (REASON[s.waitingReason] || "needs you") : s.name || s.id.slice(0, 8);
-    const cls = "lead st-" + s.state + (s.stalled ? " stalled" : "") + (sel ? " sel" : "");
-    const el = labels.set("a:" + f.id, {cls, state: s.stalled ? "stalled" : s.state, text});
+    const stalled = !!s.stalled && !waiting, name = s.name || s.id.slice(0, 8);
+    const fam = s.state === "busy" && FAMILY[actionOf(f)];
+    const text = waiting ? name + " " + (REASON[s.waitingReason] || "needs you")
+      : (fam && fam !== FAMILY.none ? fam.icon + " " : "") + name + (stalled ? " · stalled" : "");
+    const cls = "lead st-" + s.state + (stalled ? " stalled" : "") + (sel ? " sel" : "");
+    const el = labels.set("a:" + f.id, {cls, state: stalled ? "stalled" : s.state, text});
     el.style.setProperty("--accent", accentOf(s));
     const c = f.cur;
     return {el, q: kit.project(c.x, c.y + (f.kind === KIND.empty ? 1.5 : 2.4 + (waiting ? 1.0 : 0)), c.z),
       rank: waiting || sel ? 0 : (s.state === "offline" ? 2 : 1)};
   }
+  // A stalled musician's lane says so and outranks its quiet neighbours.
   function laneLabel(f) {
-    const fl = f.follower, sel = f.id === selectedId, c = f.cur;
-    const cls = "lane" + (fl.state === "active" ? "" : " rest") + (fl.stalled ? " stalled" : "") + (sel ? " sel" : "");
-    const text = (FAMILY[actionOf(f)] || FAMILY.other).icon + " " + (fl.label || "subagent");
-    const el = labels.set("a:" + f.id, {cls, state: fl.stalled ? "stalled" : null, text});
+    const fl = f.follower, sel = f.id === selectedId, c = f.cur, stalled = !!fl.stalled;
+    const cls = "lane" + (fl.state === "active" ? "" : " rest") + (stalled ? " stalled" : "") + (sel ? " sel" : "");
+    const text = (FAMILY[actionOf(f)] || FAMILY.other).icon + " " + (fl.label || "subagent") + (stalled ? " · stalled" : "");
+    const el = labels.set("a:" + f.id, {cls, state: stalled ? "stalled" : null, text});
     const sx = c.x + (f.leadX - c.x) * 0.45, sz = c.z + (f.leadZ - c.z) * 0.45;
-    return {el, q: kit.project(sx, c.y + 1.35, sz), rank: sel ? 0 : 4};
+    return {el, q: kit.project(sx, c.y + 1.35, sz), rank: sel ? 0 : (stalled ? 1 : 4)};
+  }
+  // Labels stay on screen and out from under the top bar: one that would sit
+  // under it hides, unless it must show (waiting, selected), then it drops below.
+  function keepClear(items) {
+    const fr = freeRect(false), top = fr.y0 - 4;
+    for (const it of items) {
+      if (!it.q || it.el._skW == null) continue;
+      const half = it.el._skW / 2 + 4, h = it.el._skH || 18;
+      const x = Math.min(Math.max(it.q.x, half), Math.max(half, fr.W - half));
+      it.q = {x, y: it.q.y, w: it.q.w};
+      if (it.q.y - h < top) {
+        if (it.rank <= 0) { it.q = {x, y: top + h, w: it.q.w}; it.tries = 1; } else it.q = null;
+      } else if (it.q.y - 3 * h < top) it.tries = 1;  // no stepping up into the bar to dodge a neighbour
+    }
+    return items;
   }
   function placeLabels() {
     const items = [];
@@ -116,7 +224,7 @@
     }
     for (const f of stage.figs.values()) items.push(f.kind === KIND.musician ? laneLabel(f) : conductorLabel(f));
     labels.end();
-    StrataKit.placeLabels(items);
+    StrataKit.placeLabels(keepClear(items));
   }
   function accentOf(s) { return `hsl(${Math.round((s.seed != null ? s.seed : seedOf(s.id)) % 1 * 360)} 70% 62%)`; }
 
@@ -140,7 +248,9 @@
   function onSelect(target, how) {
     selectedId = idOf(target);
     if (kit) kit.selected = (selectedId && stage.figs.get(selectedId)) || null;
-    if (selectedId && (how === "waiting" || how === "list")) focusOn(selectedId);
+    if (selectedId && (how === "waiting" || how === "list")) reveal(selectedId, true);
+    // A tap opens the card (a bottom sheet on a phone): slide what was tapped out from under it.
+    else if (selectedId && how === "tap") reveal(selectedId, false);
   }
 
   // Extra panel rows: the instrument, and how long a musician has been quiet.
@@ -155,6 +265,8 @@
   }
 
   /* ------------------------------------------------------------ sound button */
+  // A toggle with a fixed name: "Sound on", pressed or not (aria-pressed).
+  // The speaker glyph and the gold edge show the state to the eye.
   function soundButton() {
     const button = document.createElement("button");
     const glyph = document.createElement("span"), word = document.createElement("span");
@@ -162,11 +274,13 @@
     button.id = "sound";
     button.className = "av-chip av-sound";
     button.title = "Play a soft note for each tool call (off by default)";
+    glyph.className = "av-sound-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    word.textContent = "Sound on";
     button.append(glyph, word);
     const show = () => {
       button.setAttribute("aria-pressed", String(band.on));
       glyph.textContent = band.on ? "🔊" : "🔈";
-      word.textContent = band.on ? "Sound off" : "Sound on";
     };
     button.addEventListener("click", () => { if (band.on) band.disable(); else band.enable(); show(); });
     show();
@@ -234,11 +348,13 @@
     const now = () => (kit.driven ? sceneTime : Date.now() / 1000);
     feed = AgentvizFeed.create({onUpdate: accept, onStatus: hud.setStatus, transform: demoCalls, now});
     window.__orchestra = stage;
-    window.__page = {kit, stage, hud, band, fit, flyTo, focusOn, FAMILY,
+    window.__page = {kit, stage, hud, band, fit, flyTo, focusOn, projectWith, FAMILY,
       select: (id, focus) => hud.select(targetOf(stage.figs.get(id)), focus ? "list" : "api"),
+      tap: (id) => hud.select(targetOf(stage.figs.get(id)), "tap"),
       hold: () => { userMoved = true; },
       get selectedId() { return selectedId; }, get doc() { return feed.doc; }, get polls() { return feed.polls; },
       stopPolling: () => feed.stop(), pollOnce: () => feed.pollOnce(), feed: (d) => feed.push(d)};
+    addEventListener("resize", () => requestAnimationFrame(refitOnResize));
     feed.start();
     kit.start();
     if (kit.driven) kit.drive(0);

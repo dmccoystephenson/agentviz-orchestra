@@ -4,7 +4,9 @@
 // a tap selects what a pick there returns; the stalled subagent is marked;
 // a subagent's own branch shows in its panel; a new tool call pops a note
 // (and plays one with Sound on); feed strings never become HTML; the empty
-// state and the unreachable banner show; the frame is not flat; no console
+// state and the unreachable banner show; the frame is not flat; on a phone
+// the top bar is one line, no label sits under it and a tapped agent stays
+// clear of the bottom sheet; no console
 // errors.
 //   npm ci && npx playwright install chromium && npm run smoke
 const path = require("path");
@@ -119,12 +121,44 @@ async function checkCallNote(page) {
     let peak = 0;
     for (let t = 4; t <= 6; t += 0.1) { window.__strataKit.drive(t); peak = Math.max(peak, p.stage.pulse("demo-solo", t)); }
     band.note = note;
-    return {peak, played, label: document.querySelector("#sound").textContent};
+    const button = document.querySelector("#sound");
+    return {peak, played, label: button.textContent, pressed: button.getAttribute("aria-pressed")};
   });
   console.log("call note:", JSON.stringify(result));
-  check(result.peak > 0.5 && result.played >= 1 && result.label.includes("Sound off"), "a new tool call did not pop and play a note");
+  check(result.peak > 0.5 && result.played >= 1 && result.label.includes("Sound on") && result.pressed === "true",
+    "a new tool call did not pop and play a note");
   await page.click("#sound");
-  check(!(await page.evaluate(() => window.__page.band.on)), "Sound off did not disable audio");
+  check(!(await page.evaluate(() => window.__page.band.on)) &&
+    (await page.getAttribute("#sound", "aria-pressed")) === "false", "a second press did not turn the sound off");
+}
+
+// A phone: the top bar keeps to one line, no label sits under it, and a
+// tapped agent ends up in the clear band above its bottom sheet.
+async function checkPhone(browser, server) {
+  const {ctx, page, errors} = await h.open(browser, server.base + "/?fixture=1&drive=1",
+    {viewport: {width: 390, height: 664}, dpr: 1, mobile: true, ready: READY});
+  await h.stillAnimations(page);
+  await page.evaluate(() => window.__page.stopPolling());
+  await drive(page, 0, 3);
+  const bar = await page.evaluate(() => {
+    const b = document.querySelector(".av-bar").getBoundingClientRect();
+    const under = [...document.querySelectorAll("#labels .av-label")].filter((l) => getComputedStyle(l).display !== "none" && !l.classList.contains("sk-label-off") &&
+      l.getBoundingClientRect().top < b.bottom).map((l) => l.textContent);
+    return {h: b.height, under};
+  });
+  check(bar.h < 50, "the phone top bar wraps: " + bar.h + " px");
+  check(bar.under.length === 0, "labels sit under the phone top bar: " + bar.under.join(", "));
+  const at = await page.evaluate(() => window.__strataKit.targets().find((t) => t.id === "demo-waiting"));
+  await page.touchscreen.tap(at.x, at.y);
+  await drive(page, 3.25, 3.5);
+  const after = await page.evaluate(() => {
+    const f = window.__orchestra.figs.get("demo-waiting").cur, q = window.__page.kit.project(f.x, f.y + 1.0, f.z);
+    return {sel: window.__page.selectedId, y: q && q.y, sheet: document.querySelector(".av-panel").getBoundingClientRect().top};
+  });
+  console.log("phone: bar", bar.h, "px / tap", JSON.stringify(after));
+  check(after.sel === "demo-waiting" && after.y != null && after.y < after.sheet - 20, "the bottom sheet covers the tapped agent");
+  h.assertNoErrors(errors);
+  await ctx.close();
 }
 
 async function checkTextOnly(page) {
@@ -179,5 +213,6 @@ h.run("smoke", {repo: REPO, port: PORT}, async ({server, browser}) => {
   const png = await h.shot(page, path.join(REPO, "docs/media/screenshot.png"));
   console.log("distinct colours:", await h.assertNotFlat(page, png));
   h.assertNoErrors(errors);
+  await checkPhone(browser, server);
   await checkUnreachable(page);  // last: the failed fetches log console errors of their own
 });
